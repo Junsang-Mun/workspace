@@ -60,11 +60,17 @@ int main() {
   }
 
   // Send data to client
-  std::string message;
-  std::cout << "Enter a message to send to the client: ";
-  std::getline(std::cin, message);
-  if (send(clientSocket, message.c_str(), message.size(), 0) == -1) {
-    std::cerr << "Error: Failed to send data to client\n";
+  while (true) {
+    std::string message;
+    std::cout << "Enter a message to send to the client: ";
+    std::getline(std::cin, message);
+    if (message == "exit") {
+      send(clientSocket, message.c_str(), message.size(), 0);
+      break;
+    }
+    if (send(clientSocket, message.c_str(), message.size(), 0) == -1) {
+      std::cerr << "Error: Failed to send data to client\n";
+    }
   }
 
   // Close sockets

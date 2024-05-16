@@ -38,13 +38,19 @@ int main() {
   }
 
   // Receive data from server
-  char buffer[1024] = {0};
-  if (recv(clientSocket, buffer, sizeof(buffer), 0) == -1) {
-    std::cerr << "Error: Failed to receive data from server\n";
-  } else {
-    std::cout << "Server says: " << buffer << "\n";
+  while (true) {
+    char buffer[1024] = {0};
+    if (recv(clientSocket, buffer, sizeof(buffer), 0) == -1) {
+      std::cerr << "Error: Failed to receive data from server\n";
+    } else {
+      std::string receivedData(buffer);
+      if (receivedData == "exit") {
+        std::cout << "Server has ended the connection\n";
+        break;
+      }
+      std::cout << "Server says: " << buffer << "\n";
+    }
   }
-
   // Close socket
   close(clientSocket);
 
