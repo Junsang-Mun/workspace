@@ -9,24 +9,26 @@ int err(char *str) {
 }
 
 int cd(char **argv, int i) {
-  if (i != 2)
+  if (i > 2)
     return err("error: cd: bad arguments\n");
   if (chdir(argv[1]) == -1)
-    return err("error: cd: cannot change directory to "), err(argv[1]), err("\n");
+    return err("error: cd: cannot change directory to "), err(argv[1]),
+           err("\n");
   return 0;
 }
 
 int exec(char **argv, char **envp, int i) {
+  int has_pipe = 0;
   int fd[2];
-  int status;
-  int has_pipe = argv[i] && !strcmp(argv[i], "|");
+  int status = 0;
 
   if (!has_pipe && !strcmp(*argv, "cd"))
     return cd(argv, i);
 
+  if (argv[i] && !strcmp(argv[i], "|"))
+    has_pipe = 1;
   if (has_pipe && pipe(fd) == -1)
     return err("error: fatal\n");
-
   int pid = fork();
   if (!pid) {
     argv[i] = 0;
@@ -38,7 +40,6 @@ int exec(char **argv, char **envp, int i) {
     execve(*argv, argv, envp);
     return err("error: cannot execute "), err(*argv), err("\n");
   }
-
   waitpid(pid, &status, 0);
   if (has_pipe &&
       (dup2(fd[0], 0) == -1 || close(fd[0]) == -1 || close(fd[1]) == -1))
