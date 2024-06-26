@@ -1,136 +1,114 @@
-#include <algorithm>
-#include <arpa/inet.h>
-#include <cstring>
-#include <fcntl.h>
-#include <iostream>
-#include <sys/event.h>
-#include <sys/time.h>
-#include <unistd.h>
-#include <vector>
+#include "Server.hpp"
+#include <algorithm> // std::remove
 
-int main() {
-  // Create a socket
-  int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-  if (serverSocket == -1) {
-    std::cerr << "Error: Failed to create socket\n";
-    return 1;
+#define MAX_CLIENTS 256
+
+Server::Server(const std::string &port_num) {
+  setServerSocket();
+  setServerAddr();
+  setServerBind();
+  setServerListen();
+  client_addr_size = sizeof(client_addr);
+
+  pollfd server_pollfd;
+  server_pollfd.fd = server_fd;
+  server_pollfd.events = POLLIN;
+  poll_fds.push_back(server_pollfd);
+}
+
+Server::~Server() {
+  if (server_fd != -1)
+    close(server_fd);
+  for (const auto &pfd : poll_fds) {
+    if (pfd.fd != -1 && pfd.fd != server_fd)
+      close(pfd.fd);
+  }
+}
+
+void Server::setServerSocket() {
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd == -1) {
+    throw std::runtime_error("socket error");
   }
 
-  // Set socket to non-blocking mode
-  fcntl(serverSocket, F_SETFL, O_NONBLOCK);
-
-  // Bind the socket to an IP address and port
-  sockaddr_in serverAddr;
-  std::memset(&serverAddr, 0, sizeof(serverAddr));
-  serverAddr.sin_family = AF_INET;
-  serverAddr.sin_port = htons(12345); // Port number
-  serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-  if (bind(serverSocket, reinterpret_cast<sockaddr *>(&serverAddr),
-           sizeof(serverAddr)) == -1) {
-    std::cerr << "Error: Failed to bind socket\n";
-    close(serverSocket);
-    return 1;
+  int opt = 1;
+  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) ==
+      -1) {
+    throw std::runtime_error("setsockopt error");
   }
+}
 
-  // Listen for incoming connections
-  if (listen(serverSocket, 5) == -1) {
-    std::cerr << "Error: Failed to listen on socket\n";
-    close(serverSocket);
-    return 1;
+void Server::setServerAddr() {
+  memset(&server_addr, 0, sizeof(server_addr));
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  server_addr.sin_port = htons(6667); // IRC 기본 포트
+}
+
+void Server::setServerBind() {
+  if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) ==
+      -1) {
+    throw std::runtime_error("bind error");
   }
+}
 
-  std::cout << "Server listening on port 12345...\n";
-
-  // Create kqueue and register the server socket for read events (for new
-  // connections)
-  int kq = kqueue();
-  if (kq == -1) {
-    std::cerr << "Error: Failed to create kqueue\n";
-    close(serverSocket);
-    return 1;
+void Server::setServerListen() {
+  if (listen(server_fd, 5) == -1) {
+    throw std::runtime_error("listen error");
   }
+}
 
-  struct kevent change;
-  EV_SET(&change, serverSocket, EVFILT_READ, EV_ADD, 0, 0, NULL);
-  if (kevent(kq, &change, 1, NULL, 0, NULL) == -1) {
-    std::cerr << "Error: Failed to register kevent\n";
-    close(serverSocket);
-    close(kq);
-    return 1;
-  }
-
-  std::vector<int> clientSockets;
-
+void Server::run() {
   while (true) {
-    struct kevent event;
-    int nev = kevent(kq, NULL, 0, &event, 1, NULL);
-    if (nev > 0) {
-      if (event.filter == EVFILT_READ) {
-        if (event.ident == serverSocket) {
-          // Accept new client connection
-          sockaddr_in clientAddr;
-          socklen_t clientAddrSize = sizeof(clientAddr);
-          int clientSocket =
-              accept(serverSocket, reinterpret_cast<sockaddr *>(&clientAddr),
-                     &clientAddrSize);
-          if (clientSocket == -1) {
-            std::cerr << "Error: Failed to accept connection\n";
-          } else {
-            std::cout << "Connection accepted from "
-                      << inet_ntoa(clientAddr.sin_addr) << ":"
-                      << ntohs(clientAddr.sin_port) << "\n";
-            // Set client socket to non-blocking mode
-            fcntl(clientSocket, F_SETFL, O_NONBLOCK);
-            // Register the client socket for read events
-            EV_SET(&change, clientSocket, EVFILT_READ, EV_ADD, 0, 0, NULL);
-            if (kevent(kq, &change, 1, NULL, 0, NULL) == -1) {
-              std::cerr << "Error: Failed to register kevent for client\n";
-              close(clientSocket);
-            } else {
-              clientSockets.push_back(clientSocket);
-            }
+    int n = poll(poll_fds.data(), poll_fds.size(), -1);
+    if (n == -1) {
+      throw std::runtime_error("poll error");
+    }
+
+    for (size_t i = 0; i < poll_fds.size(); i++) {
+      if (poll_fds[i].revents & POLLIN) {
+        if (poll_fds[i].fd == server_fd) {
+          int new_socket = accept(server_fd, (struct sockaddr *)&client_addr,
+                                  &client_addr_size);
+          if (new_socket == -1) {
+            throw std::runtime_error("accept error");
           }
+
+          if (poll_fds.size() >= MAX_CLIENTS) {
+            close(new_socket);
+            throw std::runtime_error("max clients reached");
+          }
+
+          pollfd client_pollfd;
+          client_pollfd.fd = new_socket;
+          client_pollfd.events = POLLIN;
+          poll_fds.push_back(client_pollfd);
+
+          std::cout << "New client connected: " << new_socket << std::endl;
         } else {
-          // Handle data from connected client
-          int clientSocket = event.ident;
-          char buffer[1024] = {0};
-          ssize_t bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
-          if (bytesRead == -1) {
-            std::cerr << "Error: Failed to receive data from client\n";
-          } else if (bytesRead == 0) {
-            std::cout << "Client has closed the connection\n";
-            close(clientSocket);
-            clientSockets.erase(std::remove(clientSockets.begin(),
-                                            clientSockets.end(), clientSocket),
-                                clientSockets.end());
-          } else {
-            std::string receivedData(buffer, bytesRead);
-            std::cout << "Client says: " << receivedData << "\n";
-            // Echo message to all other clients
-            for (std::vector<int>::iterator it = clientSockets.begin();
-                 it != clientSockets.end(); ++it) {
-              if (*it != clientSocket) {
-                if (send(*it, receivedData.c_str(), receivedData.size(), 0) ==
-                    -1) {
-                  std::cerr << "Error: Failed to send data to client\n";
-                }
-              }
+          int client_fd = poll_fds[i].fd;
+          char buffer[512];
+          int n = read(client_fd, buffer, sizeof(buffer) - 1);
+          if (n <= 0) {
+            if (n == 0) {
+              // Connection closed by client
+              std::cout << "Client disconnected: " << client_fd << std::endl;
+            } else {
+              // Read error
+              std::cerr << "Read error from client: " << client_fd << std::endl;
             }
+            close(client_fd);
+            poll_fds.erase(poll_fds.begin() + i);
+            i--; // 클라이언트를 제거했으므로 인덱스를 하나 줄여야 함
+          } else {
+            buffer[n] = '\0';
+            std::cout << "Received from " << client_fd << ": " << buffer
+                      << std::endl;
+
+            // 클라이언트 메시지 처리 로직 추가
           }
         }
       }
     }
   }
-
-  // Close client sockets
-  for (std::vector<int>::iterator it = clientSockets.begin();
-       it != clientSockets.end(); ++it) {
-    close(*it);
-  }
-  // Close server socket and kqueue
-  close(serverSocket);
-  close(kq);
-
-  return 0;
 }
